@@ -1,0 +1,25 @@
+#!/bin/bash
+
+case $1 in
+start)
+	echo "Starting libvirtd service"
+	sudo systemctl start libvirtd
+	echo "Starting default network"
+	sudo virsh net-start default
+	;;
+stop)
+	echo "Stopping libvirtd service"
+	sudo systemctl stop libvirtd
+	echo "Stopping default network"
+	;;
+status)
+	echo "Status of libvirtd service"
+	sudo systemctl status libvirtd
+	echo "Status of default network"
+	sudo virsh net-list --all
+	;;
+*)
+	echo "Usage: $0 {start|stop|status}"
+	exit 1
+	;;
+esac

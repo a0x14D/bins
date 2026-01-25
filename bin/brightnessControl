@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# You can execute this script using the following commands:
+# $ ./brightnessControl.sh up
+# $ ./brightnessControl.sh down
+
+# This script was inspired by the following people:
+# https://github.com/dastorm (https://github.com/dastorm/volume-notification-dunst/blob/master/volume.sh)
+# https://github.com/sebastiencs (https://gist.github.com/sebastiencs/5d7227f388d93374cebdf72e783fbd6a)
+
+function get_brightness {
+    /usr/bin/brightnessctl -m | /usr/bin/cut -d, -f4 | /usr/bin/tr -d %
+}
+
+function send_notification {
+    icon="brightnesssettings"
+
+    # Send the notification
+    /usr/bin/dunstify -a "Brightness" -i $icon -u normal "" -h int:value:"$(get_brightness)"
+}
+
+case $1 in
+    up)
+        # Increase the backlight by 5%
+        /usr/bin/brightnessctl -q set 5%+
+
+        send_notification
+        ;;
+
+    down)
+        # Decrease the backlight by 5%
+        /usr/bin/brightnessctl -q set 5%-
+
+        send_notification
+        ;;
+
+esac

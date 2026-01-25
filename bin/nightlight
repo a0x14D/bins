@@ -1,0 +1,21 @@
+#!/bin/bash 
+
+function check_time () {
+    local time=$(date +%H)
+    if [ $time -ge 20 ] || [ $time -le 6 ]; then
+        echo "night"
+    else
+        echo "day"
+    fi
+}
+
+function turn_on () {
+  if [ $(check_time) == "night" ]; then
+    redshift -O 3000
+  else
+    redshift -x
+  fi
+}
+
+turn_on
+

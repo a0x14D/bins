@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Define color escape sequences
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+RESET='\033[0m'
+
+number_of_packages="$(sudo ls /var/cache/pacman/pkg/ | wc -l)"
+size_of_package="$(du -sh /var/cache/pacman/pkg/ | awk '{print $1}')"
+
+echo -e "Total Pkg :$BLUE $number_of_packages$RESET"
+echo -e "Total Size :$YELLOW $size_of_package$RESET"
+
+if [ "$number_of_packages" -gt 500 ]; then
+    echo "Cleaning Cache..."
+    sudo paccache -r
+    sudo paccache -rk 1
+    sudo paccache -ruk0
+    sudo pacman -Sc
+    sudo pacman -Scc
+else
+    echo -e "$RED Cache is Clean $RESET"
+fi

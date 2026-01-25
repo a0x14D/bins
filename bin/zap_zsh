@@ -1,0 +1,76 @@
+#!/bin/env bash
+
+# check zsh is installed
+if ! [ -x "$(command -v zsh)" ]; then
+	echo 'Error: zsh is not installed.' >&2
+	exit 1
+fi
+
+#
+function zsh_install() {
+	mkdir -p $HOME/.config/zsh
+	git clone https://github.com/marlonrichert/zsh-autocomplete.git $HOME/.config/zsh/zsh-autocomplete
+}
+
+# zap install
+function zap_install() {
+	zsh <(curl -s https://raw.githubusercontent.com/zap-zsh/zap/master/install.zsh) --branch release-v1
+}
+
+#post zsh
+
+function zsh_post() {
+	mv $HOME/.zshrc $HOME/.zshrc.bak
+	cat <<EOF >$HOME/.zshrc
+  # Created by Zap installer
+[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/zap/zap.zsh" ] && source "${XDG_DATA_HOME:-$HOME/.local/share}/zap/zap.zsh"
+plug "zsh-users/zsh-autosuggestions"
+plug "zap-zsh/supercharge"
+plug "zap-zsh/zap-prompt"
+plug "zsh-users/zsh-syntax-highlighting"
+plug "wintermi/zsh-starship"
+plug "wintermi/zsh-lsd"
+plug "jeffreytse/zsh-vi-mode"
+
+# history
+HISTFILE=~/.zsh_history
+
+# Load completion system
+autoload -U compinit && compinit
+setopt correct
+setopt correctall
+
+# jk to escape 
+export ZVM_VI_INSERT_ESCAPE_BINDKEY="jk"
+
+#starship prompt
+export STARSHIP_CONFIG="$HOME/.config/starship.toml"
+
+#user exports & alias
+export EDITOR='nvim'
+export VISUAL='nvim'
+alias chat="tgpt --provider phind -m"
+alias icat="kitty +kitten icat"
+# confirm before overwriting something
+alias cp="cp -i"
+alias mv='mv -i'
+alias rm='rm -i'
+
+# bindkeys
+bindkey -v 
+bindkey -M menuselect 'h' vi-backward-char
+bindkey -M menuselect 'k' vi-up-line-or-history
+bindkey -M menuselect 'j' vi-down-line-or-history
+bindkey -M menuselect 'l' vi-forward-char
+bindkey -M menuselect '\r' .accept-line
+
+#zsh dire and autocomplete
+source /home/$(whoami)/.config/zsh/zsh-autocomplete/zsh-autocomplete.plugin.zsh
+zstyle ':autocomplete:*' widget-style menu-complete
+EOF
+
+}
+
+zsh_install
+zap_install
+zsh_post

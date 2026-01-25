@@ -1,0 +1,81 @@
+#!/bin/bash 
+
+# colors 
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+blue='\033[0;34m'
+purple='\033[0;35m'
+cyan='\033[0;36m'
+white='\033[0;37m'
+nc='\033[0m'
+
+
+# check if user is root
+if [ "$EUID" -ne 0 ]
+  then echo -e "${red}Please run as root${nc}"
+  exit
+fi
+
+function apache_install {
+    # update system
+    echo -e "${yellow}Updating system${nc}"
+    pacman -Syu --noconfirm
+
+    # install lamp stack
+    echo -e "${cyan}Installing Apache${nc}"
+    pacman -S apache --noconfirm
+
+    # setup apache
+    echo -e "${blue}Setting up Apache${nc}"
+    systemctl enable httpd
+    systemctl start httpd
+    sed -i 's/#LoadModule unique_id_module modules\/mod_unique_id.so/LoadModule unique_id_module modules\/mod_unique_id.so/' /etc/httpd/conf/httpd.conf
+    systemctl restart httpd
+
+   echo "
+   <!DOCTYPE html>
+    <html>
+    <head>
+    <title>Arch Linux Apache Server</title>
+    </head>
+    <body>
+    <h1>Arch Linux Apache Server</h1>
+    </body>
+    </html>
+    " > /srv/http/index.html
+
+}
+
+function php_install {
+    # install php
+    echo -e "${cyan}Installing PHP${nc}"
+    pacman -S php php-apache --noconfirm
+
+    # setup php
+    php_version=$(php -v | awk 'NR==1 {print substr($2, 1, 1)}')
+    echo -e "${blue}Setting up PHP${nc}"
+    sed -i 's/LoadModule mpm_event_module modules\/mod_mpm_event.so/#LoadModule mpm_event_module modules\/mod_mpm_event.so/g' /etc/httpd/conf/httpd.conf
+    sed -i 's/#LoadModule mpm_prefork_module modules\/mod_mpm_prefork.so/LoadModule mpm_prefork_module modules\/mod_mpm_prefork.so/g' /etc/httpd/conf/httpd.conf
+    echo -e "#Adding php ${php_version} \nLoadModule php_module modules/libphp.so\nAddHandler php${php_version}-script php\nInclude conf/extra/php_module.conf" >> /etc/httpd/conf/httpd.conf
+    echo -e "<?php phpinfo(); ?>" > /srv/http/info.php
+    systemctl restart httpd
+}
+
+function mariadb_install {
+    # install mariadb
+    echo -e "${cyan}Installing MariaDB${nc}"
+    pacman -S mariadb --noconfirm
+
+    # setup mariadb
+    echo -e "${blue}Setting up MariaDB${nc}"
+    mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+    systemctl enable mysqld
+    systemctl start mysqld
+    mysql_secure_installation
+}
+
+apache_install
+php_install
+mariadb_install
+

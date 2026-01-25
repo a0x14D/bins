@@ -1,0 +1,30 @@
+#!/bin/env python
+import requests
+import json
+import sys
+
+text = sys.argv[1]
+filename = sys.argv[2]
+url = 'https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB?'
+headers = {
+    'User-Agent': 'Mozilla/5.0 (X1; Linux x86_64; rv:12.0) Gecko/2010101 Firefox/12.0',
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://elevenlabs.io/',
+    'Content-Type': 'application/json',
+    'Origin': 'https://elevenlabs.io',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-site',
+    'Sec-GPC': '1',
+    'TE': 'trailers'
+}
+data = {
+    "text": text,
+    "model_id": "eleven_multilingual_v2"
+}
+response = requests.post(url, headers=headers, data=json.dumps(data))
+with open(filename , 'wb') as f:
+    f.write(response.content)

@@ -1,0 +1,13 @@
+#!/bin/bash 
+
+blue="\e[34m"
+yellow="\e[33m"
+nocolor="\e[0m"
+
+w3m -dump https://command-not-found.com/"$*" | awk '/^Install/','/try this command on-line!/'
+echo -e "$blue [ arch pkg ] $nocolor"
+pkg=$(w3m -dump https://man.archlinux.org/man/"$1" | grep -A 1 "Package name:")
+echo -e "$yellow $pkg $nocolor"
+
+
+

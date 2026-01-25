@@ -1,0 +1,22 @@
+#!/bin/bash
+
+DIR="$HOME/Videos/"
+
+read -p "Enter the name of the file: " FILENAME
+
+# Notify before the recording starts
+if [ "$FILENAME" ]; then
+  notify-send -i deepin-screen-recorder "Screen Recorder" "Recording started"
+  ffmpeg -f x11grab -r 25 -s 1920x1080 -i :0.0 -c:v libx264 -preset medium "$DIR$FILENAME.mkv"
+else
+  echo "Invalid file name provided."
+fi
+
+# Notify after the recording is finished
+if [ "$FILENAME" ]; then
+  notify-send -i deepin-screen-recorder "Screen Recorder" "Recording finished"
+else
+  echo "Invalid file name provided."
+fi
+```
+
