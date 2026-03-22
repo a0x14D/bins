@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+# set -euo pipefail
+
+readonly CACHE_DIR="$HOME/.git_bin_manager"
+readonly REPO_FILE="$CACHE_DIR/repos.txt"
+readonly BIN_DIR="/usr/local/bin"
+readonly MAX_VERSIONS=3
+readonly OS_FILTER="linux"
+readonly ARCH_FILTER="amd64"
+
+mkdir -p "$CACHE_DIR"
+if [[ ! -f "$REPO_FILE" ]]; then
+  cat <<EOF > "$REPO_FILE"
+projectdiscovery/httpx
+projectdiscovery/subfinder
+surge-downloader/Surge
+Harry-kp/vortix
+EOF
+fi
+
+readarray -t REPO_LIST < "$REPO_FILE"
+
+# Global State
+NON_INTERACTIVE=0
+
+# 📍 0. Library Integration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+if [[ -f "$SCRIPT_DIR/colors.sh" ]]; then
+  source "$SCRIPT_DIR/colors.sh"
+else
+  printf "\033[1;31m[!] Error: colors.sh not found.\033[0m\n" >&2
+  exit 1
+fi
+
+# 🎨 UI Helpers & Box Drawing Elements
+readonly BOX_TL="╭"
+readonly BOX_TR="╮"
+readonly BOX_BL="╰"
+readonly BOX_BR="╯"
+readonly BOX_H="─"
+readonly BOX_V="│"
+readonly BOX_L="├"
+readonly BOX_R="┤"
+readonly BOX_M="┼"
+readonly BOX_T="┬"
+readonly BOX_B="┴"
+
+draw_header() {
+  local title="$1"
+  local width=82
+  local title_len=${#title}
+
+  # Rough compensation for emojis in string length logic (emojis are multi-byte but typically 1-2 cell width)
+  # Here we adjust specifically for the header titles we pass.
+  if [[ "$title" == *"📦"* || "$title" == *"🔄"* || "$title" == *"🧹"* || "$title" == *"🚀"* || "$title" == *"⚡"* || "$title" == *"📚"* ]]; then
+    title_len=$((title_len - 1))
+  fi
+
+  local padding=$(((width - title_len) / 2))
+  local padding_right=$((width - title_len - padding))
+
+  local h_line=$(printf "%${width}s" | sed "s/ /$BOX_H/g")
+
+  printf " %b%s%s%s%b\n" "$BOLD_MAGENTA" "$BOX_TL" "$h_line" "$BOX_TR" "$RESET"
+  printf " %b%s%b%*s%b%s%b%*s%b%s%b\n" "$BOLD_MAGENTA" "$BOX_V" "$RESET" $padding "" "$BOLD_WHITE" "$title" "$RESET" $padding_right "" "$BOLD_MAGENTA" "$BOX_V" "$RESET"
+  printf " %b%s%s%s%b\n\n" "$BOLD_MAGENTA" "$BOX_BL" "$h_line" "$BOX_BR" "$RESET"
+}
+
+pad_status() {
+  local text="$1"
+  local color="$2"
+  local width=15
+  local text_len=${#text}
+  local pad_len=$((width - text_len))
+  local pad=""
+  if ((pad_len > 0)); then
+    pad=$(printf "%*s" $pad_len "")
+  fi
+  printf "%b%s%b%s" "$color" "$text" "$RESET" "$pad"
+}
+
+# 📍 1. Helpers: Get Current & Latest Versions
+get_active_version() {
+  local repo_name=$1
+  local active_link
+  active_link=$(readlink "$BIN_DIR/$repo_name" 2>/dev/null || true)
+
+  if [[ -n "$active_link" ]]; then
+    echo "$active_link" | awk -F'/' '{print $(NF-1)}'
+  else
+    echo "None"
+  fi
+}
+
+get_latest_remote_version() {
+  local repo=$1
+  curl -sI "https://github.com/$repo/releases/latest" | grep -i "^location:" | awk -F'/' '{print $NF}' | tr -d '\r'
+}
+
+# 📍 2. Presentation: List Local Cache
+list_cache() {
+  draw_header "📦 Local Binary Storage"
+
+  if [[ -z $(ls -A "$CACHE_DIR" 2>/dev/null) ]]; then
+    printf "    %b(Empty)%b\n\n" "$DIM" "$RESET"
+    return 0
+  fi
+
+  for repo_dir in "$CACHE_DIR"/*; do
+    [[ -d "$repo_dir" ]] || continue
+    local repo_name=$(basename "$repo_dir")
+    printf "  %b%s %s%b\n" "$BOLD_CYAN" "📦" "$repo_name" "$RESET"
+
+    local versions=($(ls -1 "$repo_dir"))
+    local total=${#versions[@]}
+    local count=0
+
+    for ver in "${versions[@]}"; do
+      count=$((count + 1))
+      local ver_dir="$repo_dir/$ver"
+      local active_link=$(readlink "$BIN_DIR/$repo_name" 2>/dev/null || true)
+      local cached_bin=$(find "$ver_dir" -maxdepth 1 -type f -executable | head -n 1)
+
+      local branch_char="├─"
+      if [[ $count -eq $total ]]; then
+        branch_char="╰─"
+      fi
+
+      if [[ "$active_link" == "$cached_bin" ]] && [[ -n "$cached_bin" ]]; then
+        printf "  %b%s%b %s %b(Active)%b\n" "$BOLD_MAGENTA" "$branch_char" "$RESET" "$ver" "$BOLD_GREEN" "$RESET"
+      else
+        printf "  %b%s%b %s %b(Cached)%b\n" "$BOLD_MAGENTA" "$branch_char" "$RESET" "$ver" "$DIM" "$RESET"
+      fi
+    done
+    echo ""
+  done
+}
+
+# 📍 3. Intelligence: Check Updates (-u)
+check_updates() {
+  draw_header "🔄 Update Check"
+
+  local line27=$(printf "%27s" | sed "s/ /$BOX_H/g")
+  local line17=$(printf "%17s" | sed "s/ /$BOX_H/g")
+
+  printf " %b%s%s%s%s%s%s%s%s%b\n" "$DIM" "$BOX_TL" "$line27" "$BOX_T" "$line17" "$BOX_T" "$line17" "$BOX_T" "$line17" "$BOX_TR" "$RESET"
+  printf " %b%s%b %-25s %b%s%b %-15s %b%s%b %-15s %b%s%b %-15s %b%s%b\n" "$DIM" "$BOX_V" "$BOLD_WHITE" "Repository" "$DIM" "$BOX_V" "$BOLD_WHITE" "Local" "$DIM" "$BOX_V" "$BOLD_WHITE" "Remote" "$DIM" "$BOX_V" "$BOLD_WHITE" "Status" "$DIM" "$BOX_V" "$RESET"
+  printf " %b%s%s%s%s%s%s%s%s%b\n" "$DIM" "$BOX_L" "$line27" "$BOX_M" "$line17" "$BOX_M" "$line17" "$BOX_M" "$line17" "$BOX_R" "$RESET"
+
+  for repo in "${REPO_LIST[@]}"; do
+    local repo_name=$(basename "$repo")
+    local local_ver=$(get_active_version "$repo_name")
+    local remote_ver=$(get_latest_remote_version "$repo")
+
+    local status_text=""
+    local status_color=""
+
+    if [[ -z "$remote_ver" ]]; then
+      status_text="API Error"
+      status_color="$YELLOW"
+      remote_ver="Unknown"
+    elif [[ "$local_ver" == "None" ]]; then
+      status_text="NotInstalled"
+      status_color="$CYAN"
+    elif [[ "$local_ver" != "$remote_ver" ]]; then
+      status_text="Update Avail"
+      status_color="$BOLD_RED"
+    else
+      status_text="Up to date"
+      status_color="$GREEN"
+    fi
+
+    printf " %b%s%b %-25s %b%s%b %-15s %b%s%b %-15s %b%s%b %s %b%s%b\n" "$DIM" "$BOX_V" "$RESET" "$repo_name" "$DIM" "$BOX_V" "$RESET" "$local_ver" "$DIM" "$BOX_V" "$RESET" "$remote_ver" "$DIM" "$BOX_V" "$RESET" "$(pad_status "$status_text" "$status_color")" "$DIM" "$BOX_V" "$RESET"
+  done
+
+  printf " %b%s%s%s%s%s%s%s%s%b\n\n" "$DIM" "$BOX_BL" "$line27" "$BOX_B" "$line17" "$BOX_B" "$line17" "$BOX_B" "$line17" "$BOX_BR" "$RESET"
+}
+
+# 📍 4. Network: Fetch Asset URL
+fetch_asset_url() {
+  local repo=$1
+  local version=$2
+
+  local expanded_url="https://github.com/$repo/releases/expanded_assets/$version"
+  local dom_content=$(curl -s "$expanded_url")
+  local all_assets=$(echo "$dom_content" | grep -oE "/$repo/releases/download/[^\"]+")
+
+  local asset_path=$(echo "$all_assets" | grep -i "$OS_FILTER" | grep -i "$ARCH_FILTER" | head -n 1)
+
+  if [[ -z "$asset_path" ]]; then
+    if [[ $NON_INTERACTIVE -eq 1 ]]; then
+      >&2 printf "  %b%s%b Auto-filter failed for %s. Skipping (Unattended Mode).\n" "$BOLD_RED" "!" "$RESET" "$repo"
+      echo ""
+      return 1
+    else
+      >&2 printf "  %b%s%b No automated match for %s/%s. Switching to manual...\n" "$YELLOW" "!" "$RESET" "$OS_FILTER" "$ARCH_FILTER"
+      asset_path=$(echo "$all_assets" | fzf --prompt="Select Asset: ")
+    fi
+  fi
+
+  if [[ -n "$asset_path" ]]; then
+    echo "https://github.com${asset_path}"
+  else
+    echo ""
+  fi
+}
+
+# 📍 5. Execution Logic
+extract_payload() {
+  local asset_url=$1
+  local target_dir=$2
+  local asset_name=$(basename "$asset_url")
+  mkdir -p "$target_dir"
+  printf "  %b%s%b Downloading %b%s%b...\n" "$BOLD_BLUE" "⬇" "$RESET" "$BOLD_WHITE" "$asset_name" "$RESET"
+  wget -q --show-progress -O "$target_dir/$asset_name" "$asset_url"
+
+  pushd "$target_dir" >/dev/null || return 1
+  if [[ "$asset_name" == *.tar.?z ]]; then
+    tar -xf "$asset_name" && rm "$asset_name"
+  elif [[ "$asset_name" == *.zip ]]; then
+    unzip -q "$asset_name" && rm "$asset_name"
+  elif [[ "$asset_name" == *.deb ]]; then
+    sudo dpkg -i "$asset_name" && rm "$asset_name"
+  fi
+  popd >/dev/null || return 1
+}
+
+link_binary() {
+  local target_dir=$1
+  local repo_name=$2
+  local executable=$(find "$target_dir" -type f -executable | head -n 1)
+  if [[ -n "$executable" ]]; then
+    chmod +x "$executable"
+    sudo ln -sf "$executable" "$BIN_DIR/${repo_name}"
+    return 0
+  else
+    >&2 printf "  %b%s%b Error: Binary not found.\n" "$BOLD_RED" "✖" "$RESET"
+    return 1
+  fi
+}
+
+enforce_memory_limit() {
+  local repo_name=$1
+  local repo_dir="$CACHE_DIR/$repo_name"
+  if [[ -d "$repo_dir" ]]; then
+    local version_count=$(ls -1q "$repo_dir" | wc -l)
+    if [[ $version_count -gt $MAX_VERSIONS ]]; then
+      local to_delete=$((version_count - MAX_VERSIONS))
+      printf "  %b%s%b Purging %s old version(s)...\n" "$YELLOW" "🧹" "$RESET" "$to_delete"
+      ls -1t "$repo_dir" | tail -n "$to_delete" | while read -r old_ver; do
+        rm -rf "$repo_dir/$old_ver"
+      done
+    fi
+  fi
+}
+
+# 📍 6. The Core Install Engine
+install_target() {
+  local repo=$1
+  local target_version=$2
+  local repo_name=$(basename "$repo")
+
+  local asset_url=$(fetch_asset_url "$repo" "$target_version")
+  if [[ -z "$asset_url" ]]; then return 1; fi
+
+  local target_dir="$CACHE_DIR/$repo_name/$target_version"
+
+  if [[ -d "$target_dir" && -x $(find "$target_dir" -maxdepth 1 -type f -executable | head -n 1) ]]; then
+    printf "  %b%s%b Version %s is already cached. Re-linking.\n" "$CYAN" "🔄" "$RESET" "$target_version"
+    link_binary "$target_dir" "$repo_name"
+  else
+    extract_payload "$asset_url" "$target_dir"
+    link_binary "$target_dir" "$repo_name"
+  fi
+
+  printf "  %b%s%b Success: %b%s%b -> %b%s%b\n" "$BOLD_GREEN" "✓" "$RESET" "$BOLD_WHITE" "$repo_name" "$RESET" "$BOLD_CYAN" "$target_version" "$RESET"
+  enforce_memory_limit "$repo_name"
+}
+
+# 📍 7. Automated Update Sequence (-ua)
+update_all() {
+  NON_INTERACTIVE=1
+  draw_header "⚡ Unattended Update Sequence"
+
+  local updated=0
+  for repo in "${REPO_LIST[@]}"; do
+    local repo_name=$(basename "$repo")
+    local local_ver=$(get_active_version "$repo_name")
+    local remote_ver=$(get_latest_remote_version "$repo")
+
+    if [[ -z "$remote_ver" ]]; then continue; fi
+
+    if [[ "$local_ver" != "$remote_ver" ]]; then
+      printf "  %b%s%b Updating %b%s%b: %s -> %s\n" "$BOLD_CYAN" "🚀" "$RESET" "$BOLD_WHITE" "$repo_name" "$RESET" "$local_ver" "$remote_ver"
+      install_target "$repo" "$remote_ver"
+      updated=1
+    fi
+  done
+
+  if [[ $updated -eq 0 ]]; then
+    printf "  %b%s%b All tools are already up to date.\n\n" "$BOLD_GREEN" "✓" "$RESET"
+  else
+    printf "\n  %b%s%b All tools updated to latest specifications.\n\n" "$BOLD_GREEN" "✓" "$RESET"
+  fi
+  NON_INTERACTIVE=0
+}
+
+# 📍 8. Feature: Clean Cache
+clean_cache() {
+  draw_header "🧹 Cleaning Cache"
+  local cleaned=0
+  for repo_dir in "$CACHE_DIR"/*; do
+    [[ -d "$repo_dir" ]] || continue
+    local repo_name=$(basename "$repo_dir")
+    local active_link=$(readlink "$BIN_DIR/$repo_name" 2>/dev/null || true)
+
+    for ver_dir in "$repo_dir"/*; do
+      [[ -d "$ver_dir" ]] || continue
+      local cached_bin=$(find "$ver_dir" -maxdepth 1 -type f -executable | head -n 1)
+
+      # If the active link doesn't point to this bin, or the bin is missing
+      if [[ "$active_link" != "$cached_bin" || -z "$cached_bin" ]]; then
+        rm -rf "$ver_dir"
+        printf "  %b%s%b Removed %s/%s\n" "$BOLD_RED" "🗑" "$RESET" "$repo_name" "$(basename "$ver_dir")"
+        cleaned=1
+      fi
+    done
+  done
+  if [[ $cleaned -eq 0 ]]; then
+    printf "  %b%s%b Cache is already clean.\n" "$BOLD_GREEN" "✓" "$RESET"
+  fi
+  echo ""
+}
+
+# 📍 9. Feature: Add Repository
+add_repo() {
+  draw_header "➕ Add Repository"
+  local new_repo="$1"
+  if [[ -z "$new_repo" ]]; then
+    >&2 printf "  %b%s%b Error: No repository provided.\n" "$BOLD_RED" "✖" "$RESET"
+    return 1
+  fi
+
+  if [[ ! "$new_repo" =~ ^[^/]+/[^/]+$ ]]; then
+    >&2 printf "  %b%s%b Error: Invalid format. Use 'owner/repo'.\n\n" "$BOLD_RED" "✖" "$RESET"
+    return 1
+  fi
+
+  if grep -qi "^${new_repo}$" "$REPO_FILE"; then
+    printf "  %b%s%b Repository %b%s%b is already in the list.\n\n" "$YELLOW" "!" "$RESET" "$BOLD_WHITE" "$new_repo" "$RESET"
+    return 0
+  fi
+
+  printf "  %b%s%b Verifying repository on GitHub...\n" "$BOLD_BLUE" "⏳" "$RESET"
+  local status_code=$(curl -s -o /dev/null -w "%{http_code}" "https://github.com/$new_repo")
+  if [[ "$status_code" != "200" ]]; then
+    >&2 printf "  %b%s%b Error: Repository %b%s%b not found or private (HTTP %s).\n\n" "$BOLD_RED" "✖" "$RESET" "$BOLD_WHITE" "$new_repo" "$RESET" "$status_code"
+    return 1
+  fi
+
+  echo "$new_repo" >> "$REPO_FILE"
+  REPO_LIST+=("$new_repo")
+  printf "  %b%s%b Successfully added %b%s%b to the repository list.\n\n" "$BOLD_GREEN" "✓" "$RESET" "$BOLD_WHITE" "$new_repo" "$RESET"
+}
+
+# 📍 10. Feature: Interactive Main Menu
+interactive_menu() {
+  while true; do
+    draw_header "🚀 Git Bin Manager - Main Menu"
+    printf "   %b1.%b Install/Update a specific tool\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b2.%b List cached binaries\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b3.%b Check for updates\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b4.%b Update all to latest\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b5.%b Clean cache (keep only active)\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b6.%b Add a new GitHub repository\n" "$BOLD_CYAN" "$RESET"
+    printf "   %b0.%b Exit\n\n" "$BOLD_RED" "$RESET"
+
+    read -p "   Select an option [0-6]: " choice
+    echo ""
+
+    case "$choice" in
+    1)
+      local repo=$(printf "%s\n" "${REPO_LIST[@]}" | fzf --prompt="Select tool > ")
+      if [[ -n "$repo" ]]; then
+        printf "  %b%s%b Fetching tags for %s...\n" "$BOLD_BLUE" "⏳" "$RESET" "$(basename "$repo")"
+        local tags=$(curl -s "https://github.com/$repo/tags" | grep -oE "/releases/tag/[^\"]+" | awk -F'/' '{print $4}' | uniq)
+        if [[ -n "$tags" ]]; then
+          local select_version=$(echo "$tags" | fzf --prompt="Select version for $(basename "$repo") > ")
+          if [[ -n "$select_version" ]]; then
+            echo ""
+            install_target "$repo" "$select_version"
+          else
+            printf "  %b%s%b Aborted.\n\n" "$YELLOW" "-" "$RESET"
+          fi
+        else
+          printf "  %b%s%b No tags found.\n\n" "$YELLOW" "!" "$RESET"
+        fi
+      fi
+      ;;
+    2) list_cache ;;
+    3) check_updates ;;
+    4) update_all ;;
+    5) clean_cache ;;
+    6)
+      read -p "   Enter repository (owner/repo): " new_repo
+      echo ""
+      add_repo "$new_repo"
+      ;;
+    0)
+      printf "  %bGoodbye!%b\n" "$BOLD_CYAN" "$RESET"
+      exit 0
+      ;;
+    *) printf "  %b%s%b Invalid option.\n\n" "$BOLD_RED" "✖" "$RESET" ;;
+    esac
+
+    read -n 1 -s -r -p "   Press any key to continue..."
+    clear
+  done
+}
+
+# 📍 10. Routing Interface
+mkdir -p "$CACHE_DIR"
+
+case "${1:-}" in
+-l | --list)
+  list_cache
+  ;;
+-u | --update-check)
+  check_updates
+  ;;
+-ua | --update-all)
+  update_all
+  ;;
+-a | --add)
+  if [[ -z "${2:-}" ]]; then
+    printf "  %b%s%b Error: Missing repository. Usage: %s -a owner/repo\n" "$BOLD_RED" "✖" "$RESET" "$(basename "$0")"
+    exit 1
+  fi
+  add_repo "$2"
+  ;;
+-c | --clean)
+  clean_cache
+  ;;
+-h | --help)
+  draw_header "📚 Help Menu"
+  printf " Usage: %s [FLAG]\n\n" "$(basename "$0")"
+  printf "   %b-l,  --list%b           List installed cached binaries.\n" "$BOLD_CYAN" "$RESET"
+  printf "   %b-u,  --update-check%b   Check for remote updates (read-only).\n" "$BOLD_CYAN" "$RESET"
+  printf "   %b-ua, --update-all%b     Automatically download and install updates.\n" "$BOLD_CYAN" "$RESET"
+  printf "   %b-c,  --clean%b          Clean cache by removing inactive versions.\n" "$BOLD_CYAN" "$RESET"
+  printf "   %b-a,  --add <repo>%b     Add a new GitHub repository to the tracked list.\n" "$BOLD_CYAN" "$RESET"
+  printf "   %b(no flag)%b             Launch interactive installation menu.\n\n" "$DIM" "$RESET"
+  ;;
+"")
+  clear
+  interactive_menu
+  ;;
+*)
+  printf "  %b%s%b Invalid flag: %s. Use -h for help.\n" "$BOLD_RED" "✖" "$RESET" "$1"
+  exit 1
+  ;;
+esac
